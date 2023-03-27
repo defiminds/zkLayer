@@ -1,8 +1,8 @@
 pragma solidity ^0.8.0;
 
-import "@openzeppelin/contracts/access/Ownable.sol";
-import "@openzeppelin/contracts/utils/math/SafeMath.sol";
-import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "./access/Ownable.sol";
+import "./utils/math/SafeMath.sol";
+import "./interfaces/ERC20/IERC20n.sol";
 
 interface IZkSync {
     function getAccountId(address user) external view returns (uint64);
