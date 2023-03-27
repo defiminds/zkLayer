@@ -1,1 +1,1 @@
-Project over zkLayer on PolygonScan
+zkBank, One Banker ecosystem in zkLayer of Polygon
