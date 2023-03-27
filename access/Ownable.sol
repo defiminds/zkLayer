@@ -2,7 +2,7 @@
 
 pragma solidity ^0.8.0;
 
-import "../interfaces/IZkSync.sol";
+import "../interfaces/ZKL/IZkSync.sol";
 
 contract Ownable {
     address private _owner;
