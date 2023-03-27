@@ -1,86 +1,88 @@
-// SPDX-License-Identifier: MIT
-
 pragma solidity ^0.8.0;
 
-import "./interfaces/ERC20/IERC20.sol";
-import "./interfaces/ZKL/IZkSync.sol";
-import "./utils/ERC20/SafeERC20.sol";
-import "./access/Ownable.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/utils/math/SafeMath.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+
+interface IZkSync {
+    function getAccountId(address user) external view returns (uint64);
+    function getBalance(uint64 accountId, address token) external view returns (uint256);
+    function depositERC20(
+        address token,
+        uint128 amount,
+        uint64 accountId
+    ) external;
+    function withdrawERC20(
+        address token,
+        uint128 amount,
+        uint64 accountId
+    ) external;
+    function processExodusModeExit(uint32 tokenId) external;
+}
 
 contract zkBanker is Ownable {
+    using SafeMath for uint256;
+
     mapping(address => mapping(address => uint256)) private balances;
-    mapping(address => uint8) public tokenDecimals;
-    mapping(bytes32 => bool) private processedExits;
-    
+    mapping(address => mapping(address => uint256)) private lockedBalances;
+    mapping(address => uint128) public tokenIds;
+    event BalanceUnlocked(address indexed token, uint128 amount);
 
-    event Deposit(address indexed user, address indexed token, uint256 amount, uint64 accountId);
-    event Withdrawal(address indexed user, address indexed token, uint256 amount, uint64 accountId);
+    IZkSync private zkSync;
+    address private zkSyncAddress;
 
-    constructor(address _zkSyncAddress) Ownable(_zkSyncAddress) {}
-
-    function setTokenDecimals(address token, uint8 decimals) external onlyOwner {
-        tokenDecimals[token] = decimals;
-    }
-    
-    function depositERC20(address token, uint256 amount) external {
-        require(token != address(0), "Invalid token address");
-        require(amount > 0, "Amount must be greater than zero");
-    
-        IERC20(token).safeTransferFrom(msg.sender, address(this), amount);
-        uint256 balance = IERC20(token).balanceOf(address(this));
-        require(balance >= amount, "Token transfer failed");
-    
-        balances[msg.sender][token] += balance;
-        tokenDecimals[token] = IERC20(token).decimals();
-        emit Deposit(msg.sender, token, balance);
+    constructor(address _zkSyncAddress) {
+        zkSyncAddress = _zkSyncAddress;
+        zkSync = IZkSync(zkSyncAddress);
     }
 
-
-    function withdraw(address token, uint256 amount) external {
-        require(token != address(0), "Invalid token address");
-        require(amount > 0, "Amount must be greater than zero");
-        require(balances[msg.sender][token] >= amount, "Insufficient balance");
-    
-        balances[msg.sender][token] -= amount;
-        uint256 balance = IERC20(token).balanceOf(address(this));
-    
-        require(balance >= amount, "Insufficient contract balance");
-    
-        IERC20(token).safeTransfer(msg.sender, amount);
-        emit Withdrawal(msg.sender, token, amount);
+    function setZkSyncAddress(address _zkSyncAddress) external onlyOwner {
+        zkSyncAddress = _zkSyncAddress;
+        zkSync = IZkSync(zkSyncAddress);
     }
 
+    function deposit(address token, uint128 amount) external {
+        require(amount > 0, "zkBanker: cannot deposit 0");
+        IERC20(token).transferFrom(msg.sender, address(this), amount);
+        uint64 accountId = zkSync.getAccountId(msg.sender);
+        zkSync.depositERC20(token, amount, accountId);
+        balances[msg.sender][token] = balances[msg.sender][token].add(uint256(amount));
+    }
 
-    function getBalance(address user, address token) public view returns (uint256) {
-        uint64 accountId = zkSync.getAccountId(user);
-        return zkSync.getBalance(accountId, token);
+    function withdraw(address token, uint128 amount) external {
+        require(amount > 0, "zkBanker: cannot withdraw 0");
+        uint64 accountId = zkSync.getAccountId(msg.sender);
+        require(zkSync.getBalance(accountId, token) >= amount, "zkBanker: insufficient balance");
+        zkSync.withdrawERC20(token, amount, accountId);
+        IERC20(token).transfer(msg.sender, amount);
+        balances[msg.sender][token] = balances[msg.sender][token].sub(uint256(amount));
     }
 
     function balanceOf(address user, address token) public view returns (uint256) {
-        if (token == address(0)) {
-           return user.balance;
-        } else {
-           return balances[user][token] * (10 ** uint256(tokenDecimals[token]));
-        }
+        return balances[user][token];
     }
 
-    function totalBalanceOf(address user) public view returns (uint256) {
-        uint256 totalBalance = user.balance;
-         for (uint256 i = 0; i < tokens.length; i++) {
-            address token = tokens[i];
-            uint256 balance = balances[user][token] * (10 ** uint256(tokenDecimals[token]));
-            totalBalance += balance;
-         }
-       return totalBalance;
+    function getLockedBalance(address user, address token) public view returns (uint256) {
+        return lockedBalances[user][token];
     }
 
+    function lockBalance(address token, uint128 amount) external {
+        require(amount > 0, "zkBanker: cannot lock 0 balance");
+        uint64 accountId = zkSync.getAccountId(msg.sender);
+        require(zkSync.getBalance(accountId, token) >= amount, "zkBanker: insufficient balance");
+        zkSync.withdrawERC20(token, amount, accountId);
+        lockedBalances[msg.sender][token] = lockedBalances[msg.sender][token].add(uint256(amount));
+    }
 
-    function processExits(bytes32[] calldata _transferIds) public onlyOwner {
-        for (uint256 i = 0; i < _transferIds.length; i++) {
-            if (!processedExits[_transferIds[i]]) {
-                zkSync.processExodusModeExit(_transferIds[i]);
-                processedExits[_transferIds[i]] = true;
-            }
-        }
+    function unlockBalance(address token, uint128 amount) external {
+    require(msg.sender == owner(), "zkBanker: Only the owner can unlock the balance");
+    // Withdraw from zkSync
+    IZkSync zkSync = IZkSync(zkSyncAddress);
+    uint64 accountId = zkSync.getAccountId(address(this));
+    uint128 tokenId = tokenIds[token];
+    // Update balance
+    balances[address(this)][token] = balances[address(this)][token].sub(amount);
+    balances[owner()][token] = balances[owner()][token].add(amount);
+    emit BalanceUnlocked(token, amount);
     }
 }
